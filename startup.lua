@@ -49,6 +49,16 @@ local CONFIG = {
   domum_match_me_variant   = true,
   domum_require_components = true,
   domum_disable_crafting   = true,
+
+  -- Verification matters because some ME Bridge/AP versions return boolean true
+  -- for a successful method call even when zero items actually moved. Domum is
+  -- verified by default so the script does not lie, cooldown the request, and
+  -- then leave the courier staring into an empty post box like a cursed ledger.
+  verify_exports           = true,
+  domum_verify_exports     = true,
+  verify_wait_seconds      = 0.15,
+  unconfirmed_retry_seconds = 20,
+
   me_batch_yield_every     = 12,
 
   blacklist_path           = "blacklist.txt",
@@ -179,6 +189,9 @@ local function runSetup(existing)
   cfg.domum_match_me_variant = readBool("Enable Domum Ornamentum component-aware matching", cfg.domum_match_me_variant)
   cfg.domum_require_components = readBool("Require Domum components instead of display-name fallback", cfg.domum_require_components)
   cfg.domum_disable_crafting = readBool("Disable AE crafting for Domum Ornamentum variants", cfg.domum_disable_crafting)
+  cfg.verify_exports = readBool("Verify exports by checking AE stock before/after", cfg.verify_exports)
+  cfg.domum_verify_exports = readBool("Always verify Domum Ornamentum exports", cfg.domum_verify_exports)
+  cfg.verify_wait_seconds = readNumber("Verification wait tenths of a second", math.floor((tonumber(cfg.verify_wait_seconds) or 0.15) * 10)) / 10
   cfg.config_path = cfg.config_path or CONFIG.config_path or "autofulfill_config.lua"
   saveConfig(cfg)
   print("")
@@ -186,6 +199,7 @@ local function runSetup(existing)
   print("Output target: " .. tostring(cfg.export_side))
   print("Poll seconds: " .. tostring(cfg.poll_seconds))
   print("Domum matching: " .. tostring(cfg.domum_match_me_variant))
+  print("Export verification: " .. tostring(cfg.verify_exports))
   print("Press Enter to start.")
   read()
   return cfg
@@ -224,6 +238,7 @@ local state = {
   blocked            = 0,
   deferred           = 0,
   errors             = 0,
+  unconfirmed        = 0,
   crafting           = {}, -- item name -> expiry ms
   handled            = {}, -- request key -> expiry ms
   request_item_cd    = {}, -- request key .. "|" .. item -> expiry ms
@@ -549,15 +564,25 @@ local function filterLabel(filter)
   return s
 end
 
-local function resultCount(result, fallback)
+local function resultCount(result)
   if type(result) == "number" then return result end
-  if type(result) == "boolean" then return result and (fallback or 0) or 0 end
   if type(result) == "table" then
-    local n = tonumber(firstField(result, { "count", "amount", "exported", "transferred", "qty", "quantity" }, 0)) or 0
+    local n = tonumber(firstField(result, { "count", "amount", "exported", "transferred", "qty", "quantity", "moved" }, 0)) or 0
     if n > 0 then return n end
-    if firstField(result, { "ok", "success" }, false) then return fallback or 0 end
   end
   return 0
+end
+
+local function resultClaimsSuccess(result)
+  if type(result) == "boolean" then return result end
+  if type(result) == "table" then return firstField(result, { "ok", "success", "successful" }, false) and true or false end
+  if type(result) == "number" then return result > 0 end
+  return false
+end
+
+local function rawResultLabel(result)
+  if type(result) == "table" then return serial(result) end
+  return tostring(result)
 end
 
 local function getStock(filter)
@@ -568,6 +593,12 @@ local function getStock(filter)
   local count = tonumber(firstField(info, { "count", "amount", "qty", "quantity" }, 0)) or 0
   local craftable = firstField(info, { "isCraftable", "craftable", "is_craftable" }, false) and true or false
   return count, craftable
+end
+
+
+local function shouldVerifyExport(filter)
+  local name = filterName(filter)
+  return CONFIG.verify_exports or (CONFIG.domum_verify_exports and isDomumName(name))
 end
 
 local function isCraftable(filter, stockFlag)
@@ -590,12 +621,32 @@ end
 
 local function exportItem(filter, count)
   count = clampCount(count, CONFIG.max_export_stack)
+  local verify = shouldVerifyExport(filter)
+  local before = nil
+  if verify then before = getStock(filter) end
+
   local ok, result, _, _, method = call(me, { "exportItem", "export_item" }, filterWithCount(filter, count), CONFIG.export_side)
-  if not ok then return 0, tostring(result) end
-  local n = resultCount(result, count)
-  if n > 0 then return n, nil end
-  if type(result) == "table" then return 0, serial(result) end
-  return 0, "unexpected " .. tostring(method) .. " result: " .. tostring(result)
+  if not ok then return 0, tostring(result), false end
+
+  local claimed = resultCount(result)
+  if claimed <= 0 and resultClaimsSuccess(result) and not verify then claimed = count end
+
+  if verify then
+    if CONFIG.verify_wait_seconds and CONFIG.verify_wait_seconds > 0 then sleep(CONFIG.verify_wait_seconds) end
+    local after = getStock(filter)
+    local moved = 0
+    if before and after and before > after then moved = math.min(count, before - after) end
+    if moved > 0 then return moved, nil, true end
+
+    local raw = rawResultLabel(result)
+    if resultClaimsSuccess(result) or claimed > 0 then
+      return 0, ("unconfirmed %s export via %s; AE before/after %s/%s; bridge returned %s"):format(filterLabel(filter), tostring(method), tostring(before), tostring(after), raw), false
+    end
+    return 0, ("no movement via %s; AE before/after %s/%s; bridge returned %s"):format(tostring(method), tostring(before), tostring(after), raw), false
+  end
+
+  if claimed > 0 then return claimed, nil, false end
+  return 0, "unexpected " .. tostring(method) .. " result: " .. rawResultLabel(result), false
 end
 
 local function craftItem(filter, count)
@@ -747,7 +798,7 @@ local function chooseAlternative(req, alts, reqKey)
   local sawUsable, skippedByCooldown = false, false
 
   for _, alt in ipairs(alts or {}) do
-    if alt.name and not blacklist[alt.name] then
+    if alt.name and not isBlacklisted(alt) then
       local filter = makeFilter(alt)
       local name = filterName(filter)
       if onAnyCooldown(reqKey, filter) then
@@ -823,7 +874,16 @@ local function fulfill(req)
       markHandled(key, filter)
       log(("EXPORT %dx %s -> %s (%s)"):format(exported, label, target, desc), "info")
     else
-      rememberError("export:" .. name, ("EXPORT FAILED %s (%s)"):format(label, err or "buffer full or bridge refused"))
+      local msg = err or "buffer full, no stock movement, or bridge refused"
+      if tostring(msg):find("unconfirmed", 1, true) then
+        state.unconfirmed = state.unconfirmed + 1
+        if CONFIG.unconfirmed_retry_seconds and CONFIG.unconfirmed_retry_seconds > 0 then
+          state.request_item_cd[key .. "|" .. filterIdentity(filter)] = nowMs() + CONFIG.unconfirmed_retry_seconds * 1000
+        end
+        logThrottled(state.error_seen, "unconfirmed:" .. name, CONFIG.error_log_ttl, ("EXPORT UNCONFIRMED %s (%s)"):format(label, msg), "missing")
+      else
+        rememberError("export:" .. name, ("EXPORT FAILED %s (%s)"):format(label, msg))
+      end
     end
     return
   end
@@ -954,8 +1014,9 @@ local function drawDashboard()
   setColor(colors.lightBlue); writeAt(2, 9,  ("Deferred:  %d"):format(state.deferred))
   setColor(colors.purple);    writeAt(2, 10, ("Blocked:   %d"):format(state.blocked))
   setColor(colors.orange);    writeAt(2, 11, ("Missing:   %d"):format(state.missing))
+  setColor(colors.yellow);    writeAt(2, 12, ("Unconfirm: %d"):format(state.unconfirmed))
   setColor(state.last_poll_ok and colors.lime or colors.red)
-  writeAt(2, 12, "Poll:      " .. (state.last_poll_ok and "ok" or "failed"))
+  writeAt(2, 13, "Poll:      " .. (state.last_poll_ok and "ok" or "failed"))
 
   setColor(colors.cyan)
   writeAt(2, 14, "Recent:")
