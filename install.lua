@@ -2,12 +2,12 @@
 -- Downloads startup.lua, blacklist.txt, and probe.lua into the current directory.
 --
 -- Usage on the CC computer:
---   wget https://cdn.jsdelivr.net/gh/Calmingstorm/colony-autofulfill-domum@main/install.lua install.lua
+--   wget https://cdn.jsdelivr.net/gh/Calmingstorm/colony-autofulfill-domum@90d31eb29724f025a6492e8da5baf9eb2a0194f6/install.lua install.lua
 --   install.lua
 --   startup setup
 --   reboot
 
-local BASE = "https://cdn.jsdelivr.net/gh/Calmingstorm/colony-autofulfill-domum@main/"
+local BASE = "https://cdn.jsdelivr.net/gh/Calmingstorm/colony-autofulfill-domum@90d31eb29724f025a6492e8da5baf9eb2a0194f6/"
 local FILES = { "startup.lua", "blacklist.txt", "probe.lua" }
 
 for _, f in ipairs(FILES) do
