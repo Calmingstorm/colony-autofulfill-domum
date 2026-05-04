@@ -2,7 +2,7 @@
 -- Downloads startup.lua, blacklist.txt, and probe.lua into the current directory.
 --
 -- Usage on the CC computer:
---   wget https://cdn.jsdelivr.net/gh/Calmingstorm/colony-autofulfill-domum@aa6b705489672b9ae9dcc8923ed9bdae1e871f4c/install.lua install.lua
+--   wget https://cdn.jsdelivr.net/gh/Calmingstorm/colony-autofulfill-domum@a3e4774daa00fc60f67ed9b2b37224ab71b827a8/install.lua install.lua
 --   install.lua
 --   startup setup
 --   reboot
