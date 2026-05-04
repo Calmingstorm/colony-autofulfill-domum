@@ -453,14 +453,27 @@ local function tierOf(name)
   return 0
 end
 
-local function looksLikeToolRequest(alts)
-  for _, alt in ipairs(alts or {}) do
-    local s = shortName(alt.name)
-    for word in pairs(TOOL_WORDS) do
-      if s:find(word) then return true end
-    end
+local function looksLikeToolName(name)
+  local s = shortName(name)
+  for word in pairs(TOOL_WORDS) do
+    if s:find(word) then return true end
   end
   return false
+end
+
+local function looksLikeToolRequest(alts)
+  for _, alt in ipairs(alts or {}) do
+    if looksLikeToolName(alt.name) then return true end
+  end
+  return false
+end
+
+local function hasToolAlternative(alts)
+  -- MineColonies may offer tools/armor as acceptable alternatives for requests
+  -- like "has a tool". Do not auto-ship those; this script cannot judge
+  -- durability/enchantments/colony policy safely. The old robust build called
+  -- this helper without defining it, which crashed startup before the first poll.
+  return looksLikeToolRequest(alts)
 end
 
 local function lowValueScore(name)
