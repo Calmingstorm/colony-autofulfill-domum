@@ -218,6 +218,12 @@ local me, meType         = findAny({ "me_bridge", "meBridge" })
 local monitor            = peripheral.find("monitor")
 local chat               = findAny({ "chatBox", "chat_box" })
 
+local function refreshMonitor()
+  if monitor then return monitor end
+  monitor = peripheral.find("monitor")
+  return monitor
+end
+
 local args = { ... }
 if args[1] == "setup" or args[1] == "--setup" then
   CONFIG = runSetup(loadConfigFile(CONFIG.config_path))
@@ -1006,7 +1012,7 @@ local function safeNumber(method, default)
 end
 
 local function drawDashboard()
-  if not monitor then return end
+  if not refreshMonitor() then return end
   monitor.setBackgroundColor(colors.black)
   monitor.setTextScale(0.5)
   monitor.clear()
@@ -1061,8 +1067,4 @@ local function supervised(name, fn)
   end
 end
 
-if monitor then
-  parallel.waitForAll(supervised("fulfill", fulfillLoop), supervised("dashboard", dashboardLoop))
-else
-  supervised("fulfill", fulfillLoop)()
-end
+parallel.waitForAll(supervised("fulfill", fulfillLoop), supervised("dashboard", dashboardLoop))
