@@ -576,6 +576,7 @@ local function filterLabel(filter)
   if f._mode == "domum-colony-components" then s = s .. " [colony-components]"
   elseif f._mode == "domum-exact-fp" then s = s .. " [me-fp]"
   elseif f._mode == "domum-exact-components" then s = s .. " [me-components]"
+  elseif f._mode == "domum-request-fp" then s = s .. " [request-fp]"
   elseif f._mode == "domum-exact-name-selected" then s = s .. " [single-variant]"
   elseif hasMeaningfulData(f.components) then s = s .. " [components]"
   elseif hasMeaningfulData(f.nbt) then s = s .. " [nbt]"
@@ -737,7 +738,13 @@ local function findDomumVariant(resource)
   local wantComponents = getComponentsFrom(resource) or base.components
   local variants = getItemVariantsByName(name)
   if not hasMeaningfulData(wantComponents) then
-    return nil, variants, "request has no Domum components; display name ignored for Domum safety"
+    if hasMeaningfulData(base.fingerprint) then
+      for _, v in ipairs(variants) do
+        if tostring(v.fingerprint or "") == tostring(base.fingerprint) then return v, variants, "fingerprint" end
+      end
+      return nil, variants, "request has fingerprint but no matching AE2 variant fingerprint"
+    end
+    return nil, variants, "request has no Domum components or fingerprint; display name ignored for Domum safety"
   end
   local matches = {}
   for _, v in ipairs(variants) do
@@ -761,8 +768,23 @@ local function domumResourceComponentFilter(resource, baseFilter)
   return { name = filterName(baseFilter), components = comps, _mode = "domum-colony-components", _identity = "domum-cmp:" .. filterName(baseFilter) .. ":" .. serial(comps) }
 end
 
+local function domumResourceFingerprintFilter(resource, baseFilter)
+  local fp = nil
+  if type(resource) == "table" then
+    fp = resource.fingerprint or (type(resource.item) == "table" and resource.item.fingerprint)
+  end
+  fp = fp or (type(baseFilter) == "table" and baseFilter.fingerprint)
+  if not hasMeaningfulData(fp) then return nil end
+  return { name = filterName(baseFilter), fingerprint = tostring(fp), _mode = "domum-request-fp", _identity = "domum-fp:" .. filterName(baseFilter) .. ":" .. tostring(fp) }
+end
+
 local function exportDomum(resource, desired)
   local base = makeFilter(resource)
+  local directFp = domumResourceFingerprintFilter(resource, base)
+  if directFp then
+    local exported, err = exportItem(directFp, desired)
+    if exported and exported > 0 then return exported, nil, directFp end
+  end
   local direct = domumResourceComponentFilter(resource, base)
   if direct then
     local exported, err = exportItem(direct, desired)
