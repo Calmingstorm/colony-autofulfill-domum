@@ -48,7 +48,8 @@ local CONFIG = {
   -- script uses component-aware matching/export before falling back.
   domum_match_me_variant   = true,
   domum_require_components = true,
-  domum_disable_crafting   = true,
+  domum_disable_crafting   = false,
+  domum_craft_plain_shapes = true,
 
   -- Verification matters because some ME Bridge/AP versions return boolean true
   -- for a successful method call even when zero items actually moved. Domum is
@@ -189,6 +190,7 @@ local function runSetup(existing)
   cfg.domum_match_me_variant = readBool("Enable Domum Ornamentum component-aware matching", cfg.domum_match_me_variant)
   cfg.domum_require_components = readBool("Require Domum components instead of display-name fallback", cfg.domum_require_components)
   cfg.domum_disable_crafting = readBool("Disable AE crafting for Domum Ornamentum variants", cfg.domum_disable_crafting)
+  cfg.domum_craft_plain_shapes = readBool("Allow AE crafting of untextured Domum base shapes", cfg.domum_craft_plain_shapes)
   cfg.verify_exports = readBool("Verify exports by checking AE stock before/after", cfg.verify_exports)
   cfg.domum_verify_exports = readBool("Always verify Domum Ornamentum exports", cfg.domum_verify_exports)
   cfg.verify_wait_seconds = readNumber("Verification wait tenths of a second", math.floor((tonumber(cfg.verify_wait_seconds) or 0.15) * 10)) / 10
@@ -527,6 +529,7 @@ local function makeFilter(src)
     copyFilterField(f, src, "components")
     copyFilterField(f, src, "dataComponents", "components")
     copyFilterField(f, src, "data_components", "components")
+    copyFilterField(f, src, "component_hash")
     copyFilterField(f, src, "fingerprint")
     if type(src.item) == "table" then
       if f.name == "" then f.name = tostring(src.item.name or src.item.id or "") end
@@ -535,6 +538,7 @@ local function makeFilter(src)
       copyFilterField(f, src.item, "components")
       copyFilterField(f, src.item, "dataComponents", "components")
       copyFilterField(f, src.item, "data_components", "components")
+      copyFilterField(f, src.item, "component_hash")
       copyFilterField(f, src.item, "fingerprint")
     end
   end
@@ -573,7 +577,8 @@ end
 local function filterLabel(filter)
   local f = makeFilter(filter)
   local s = filterName(f)
-  if f._mode == "domum-colony-components" then s = s .. " [colony-components]"
+  if f._mode == "domum-plain-shape" then s = s .. " [plain-shape]"
+  elseif f._mode == "domum-colony-components" then s = s .. " [colony-components]"
   elseif f._mode == "domum-exact-fp" then s = s .. " [me-fp]"
   elseif f._mode == "domum-exact-components" then s = s .. " [me-components]"
   elseif f._mode == "domum-request-fp" then s = s .. " [request-fp]"
@@ -732,6 +737,21 @@ local function getItemVariantsByName(name)
   return variants
 end
 
+
+local function domumPlainShapeFilter(resource)
+  local f = makeFilter(resource)
+  if not isDomumName(filterName(f)) then return nil end
+  f.components = nil
+  f.dataComponents = nil
+  f.data_components = nil
+  f.nbt = nil
+  f.fingerprint = nil
+  f.component_hash = nil
+  f._mode = "domum-plain-shape"
+  f._identity = "domum-shape:" .. filterName(f)
+  return f
+end
+
 local function findDomumVariant(resource)
   local base = makeFilter(resource)
   local name = filterName(base)
@@ -759,7 +779,7 @@ local function domumVariantFilter(variant, mode)
   local f = makeFilter(variant)
   if mode == "components" and hasMeaningfulData(f.components) then f._mode = "domum-exact-components"; return f end
   if mode == "fingerprint" and hasMeaningfulData(f.fingerprint) then f._mode = "domum-exact-fp"; return f end
-  f.components = nil; f.fingerprint = nil; f.nbt = nil; f._mode = "domum-exact-name-selected"; return f
+  f.components = nil; f.fingerprint = nil; f.component_hash = nil; f.nbt = nil; f._mode = "domum-exact-name-selected"; return f
 end
 
 local function domumResourceComponentFilter(resource, baseFilter)
@@ -845,9 +865,23 @@ local function chooseAlternative(req, alts, reqKey)
       if onAnyCooldown(reqKey, filter) then
         skippedByCooldown = true
       elseif CONFIG.domum_match_me_variant and isDomumName(name) then
-        sawUsable = true
-        -- Domum is handled by exportDomum so it can use component/fingerprint filters.
-        table.insert(stocked, { filter = filter, resource = alt, stock = requestCount(req), score = lowValueScore(name) + 1000, domum = true })
+        -- Domum stored variants are component-bearing custom blocks. The Architects
+        -- Cutter recipes themselves output the plain Domum block id; material
+        -- choices are cutter inputs, not part of the recipe JSON. So stocked
+        -- variants need exact component/fingerprint export, but AE crafting must
+        -- target the uncomponented shape id.
+        local variant, variants = findDomumVariant(alt)
+        if variant then
+          sawUsable = true
+          table.insert(stocked, { filter = filter, resource = alt, stock = tonumber(variant.count or variant.amount) or requestCount(req), score = lowValueScore(name) + 1000, domum = true })
+        elseif CONFIG.domum_craft_plain_shapes then
+          local plain = domumPlainShapeFilter(filter)
+          local stock, stockCraftable = getStock(plain)
+          local craftable = isCraftable(plain, stockCraftable)
+          if stock > 0 or craftable then sawUsable = true end
+          if stock > 0 then table.insert(stocked, { filter = plain, resource = alt, stock = stock, score = lowValueScore(name) + 900 }) end
+          if craftable then table.insert(craftables, { filter = plain, resource = alt, score = lowValueScore(name) + 900, domum_plain = true }) end
+        end
       else
         local stock, stockCraftable = getStock(filter)
         local craftable = isCraftable(filter, stockCraftable)
@@ -933,7 +967,7 @@ local function fulfill(req)
     local filter = choice.filter
     local label = filterLabel(filter)
     local name = filterName(filter)
-    if CONFIG.domum_disable_crafting and isDomumName(name) then
+    if CONFIG.domum_disable_crafting and isDomumName(name) and not (filter and filter._mode == "domum-plain-shape") then
       state.deferred = state.deferred + 1
       return
     end
